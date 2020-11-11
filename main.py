@@ -59,10 +59,11 @@ def main(yolo):
     metric = nn_matching.NearestNeighborDistanceMetric("cosine", max_cosine_distance, nn_budget)
     tracker = Tracker(metric)
 
-    writeVideo_flag = True
+    write_video_flag = True
+    # VideoCapture()中参数是0，表示打开笔记本的内置摄像头，参数是视频文件路径则打开视频
     video_capture = cv2.VideoCapture(args["input"])
 
-    if writeVideo_flag:
+    if write_video_flag:
         # Define the codec and create VideoWriter object
         w = int(video_capture.get(3))
         h = int(video_capture.get(4))
@@ -74,37 +75,43 @@ def main(yolo):
     fps = 0.0
 
     while True:
-
-        ret, frame = video_capture.read()  # frame shape 640*480*3
+        # cap.read()按帧读取视频，ret,frame是获cap.read()方法的两个返回值。其中ret是布尔值，如果读取帧是正确的则返回True，如果文件读取到结尾，它的返回值就为False。frame就是每一帧的图像，是个三维矩阵。
+        ret, frame = video_capture.read()  # frame shape 640 * 480 * 3
         if not ret:
             break
         t1 = time.time()
 
+        # Image.fromarray 就是将数组转变为图像
         image = Image.fromarray(frame[..., ::-1])  # bgr to rgb
         boxes, confidence, class_names = yolo.detect_image(image)
         features = encoder(frame, boxes)
-        # score to 1.0 here).
-        detections = [Detection(bbox, 1.0, feature) for bbox, feature in zip(boxes, features)]
-        # Run non-maxima suppression.
+        # score to 1.0 here
+        # 根据 yolo 检测到的检测框和特征向量，得到 Detection 类对象
+        detections = [Detection(bbox, conf, feature) for bbox, conf, feature in zip(boxes, confidence, features)]
+        # 获取到 frame 图像中每一个检测框的坐标
         boxes = np.array([d.tlwh for d in detections])
         scores = np.array([d.confidence for d in detections])
+        # 进行非极大值抑制
         indices = preprocessing.non_max_suppression(boxes, nms_max_overlap, scores)
         detections = [detections[i] for i in indices]
 
         # Call the tracker
         tracker.predict()
+        # 根据最新得到的检测框，进行级联匹配，对轨迹进行更新，可能新增 track，也可能删除掉一些 track
         tracker.update(detections)
 
         i = int(0)
         indexIDs = []
-        c = []
-        boxes = []
 
         for det in detections:
             bbox = det.to_tlbr()
+            # 在 frame 上画出黑色的检测框
             cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (255, 255, 255), 2)
 
         for track in tracker.tracks:
+            # 遇到以下两种情况，不在 frame 上显示出追踪的轨迹
+            # 1.track 的状态不为 confirmed，也就是说要么处于 deleted 或者 tentative
+            # 2.track 所追踪的目标没有匹配上 detection
             if not track.is_confirmed() or track.time_since_update > 1:
                 continue
 
@@ -164,8 +171,8 @@ def main(yolo):
         cv2.resizeWindow('YOLO4_Deep_SORT', 1024, 768)
         cv2.imshow('YOLO4_Deep_SORT', frame)
 
-        if writeVideo_flag:
-            # save a frame
+        if write_video_flag:
+            # 将经过处理（画上了检测框和追踪框）的 frame 保存到 output.avi 中
             out.write(frame)
             frame_index = frame_index + 1
 
@@ -188,7 +195,7 @@ def main(yolo):
         print("[No Found]")
     # print("[INFO]: model_image_size = (960, 960)")
     video_capture.release()
-    if writeVideo_flag:
+    if write_video_flag:
         out.release()
         list_file.close()
     cv2.destroyAllWindows()
