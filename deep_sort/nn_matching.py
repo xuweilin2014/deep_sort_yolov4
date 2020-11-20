@@ -93,6 +93,7 @@ def _nn_cosine_distance(x, y):
 
     """
     distances = _cosine_distance(x, y)
+
     return distances.min(axis=0)
 
 
@@ -121,7 +122,6 @@ class NearestNeighborDistanceMetric(object):
     """
 
     def __init__(self, metric, matching_threshold, budget=None):
-
 
         if metric == "euclidean":
             self._metric = _nn_euclidean_distance

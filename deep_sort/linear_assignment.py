@@ -8,9 +8,7 @@ from . import kalman_filter
 INFTY_COST = 1e+5
 
 
-def min_cost_matching(
-        distance_metric, max_distance, tracks, detections, track_indices=None,
-        detection_indices=None):
+def min_cost_matching(distance_metric, max_distance, tracks, detections, track_indices=None, detection_indices=None):
     """Solve linear assignment problem.
 
     Parameters
@@ -52,8 +50,7 @@ def min_cost_matching(
     if len(detection_indices) == 0 or len(track_indices) == 0:
         return [], track_indices, detection_indices  # Nothing to match.
 
-    cost_matrix = distance_metric(
-        tracks, detections, track_indices, detection_indices)
+    cost_matrix = distance_metric(tracks, detections, track_indices, detection_indices)
     cost_matrix[cost_matrix > max_distance] = max_distance + 1e-5
     indices = linear_assignment(cost_matrix)
 
@@ -75,9 +72,7 @@ def min_cost_matching(
     return matches, unmatched_tracks, unmatched_detections
 
 
-def matching_cascade(
-        distance_metric, max_distance, cascade_depth, tracks, detections,
-        track_indices=None, detection_indices=None):
+def matching_cascade(distance_metric, max_distance, cascade_depth, tracks, detections, track_indices=None, detection_indices=None):
     """Run matching cascade.
 
     Parameters
@@ -121,6 +116,7 @@ def matching_cascade(
 
     unmatched_detections = detection_indices
     matches = []
+
     for level in range(cascade_depth):
         if len(unmatched_detections) == 0:  # No detections left
             break
@@ -129,14 +125,13 @@ def matching_cascade(
             k for k in track_indices
             if tracks[k].time_since_update == 1 + level
         ]
+
         if len(track_indices_l) == 0:  # Nothing to match at this level
             continue
 
-        matches_l, _, unmatched_detections = \
-            min_cost_matching(
-                distance_metric, max_distance, tracks, detections,
-                track_indices_l, unmatched_detections)
+        matches_l, _, unmatched_detections = min_cost_matching(distance_metric, max_distance, tracks, detections, track_indices_l, unmatched_detections)
         matches += matches_l
+
     unmatched_tracks = list(set(track_indices) - set(k for k, _ in matches))
     return matches, unmatched_tracks, unmatched_detections
 
@@ -144,9 +139,9 @@ def matching_cascade(
 def gate_cost_matrix(
         kf, cost_matrix, tracks, detections, track_indices, detection_indices,
         gated_cost=INFTY_COST, only_position=False):
-    """Invalidate infeasible entries in cost matrix based on the state
+    """
+    Invalidate infeasible entries in cost matrix based on the state
     distributions obtained by Kalman filtering.
-
     Parameters
     ----------
     kf : The Kalman filter.
@@ -171,20 +166,19 @@ def gate_cost_matrix(
     only_position : Optional[bool]
         If True, only the x, y position of the state distribution is considered
         during gating. Defaults to False.
-
     Returns
     -------
     ndarray
         Returns the modified cost matrix.
-
     """
+
     gating_dim = 2 if only_position else 4
     gating_threshold = kalman_filter.chi2inv95[gating_dim]
-    measurements = np.asarray(
-        [detections[i].to_xyah() for i in detection_indices])
+    measurements = np.asarray([detections[i].to_xyah() for i in detection_indices])
+
     for row, track_idx in enumerate(track_indices):
         track = tracks[track_idx]
-        gating_distance = kf.gating_distance(
-            track.mean, track.covariance, measurements, only_position)
+        gating_distance = kf.gating_distance(track.mean, track.covariance, measurements, only_position)
         cost_matrix[row, gating_distance > gating_threshold] = gated_cost
+
     return cost_matrix

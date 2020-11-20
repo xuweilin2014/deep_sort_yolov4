@@ -13,6 +13,8 @@ import numpy as np
 import argparse
 from PIL import Image
 from yolo import YOLO
+import logging
+import os
 
 from deep_sort import preprocessing
 from deep_sort import nn_matching
@@ -42,13 +44,69 @@ np.random.seed(100)
 COLORS = np.random.randint(0, 255, size=(200, 3), dtype="uint8")
 
 
-# list = [[] for _ in range(100)]
+class PersonIdFor1Track:
+    def __init__(self):
+        self.person_dict = {}
+
+    def add_track(self, track_id):
+        self.person_dict.setdefault(track_id, 1)
+
+    def get_person_id(self, track_id):
+        copy_id = self.person_dict[track_id]
+        self.person_dict[track_id] = copy_id + 1
+        return copy_id
+
+
+def get_logger(name='root'):
+    formatter = logging.Formatter(fmt='%(asctime)s [%(levelname)s]: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    return logger
+
+
+def show_image(total_person_counter, current_person_counter, fps, frame):
+    cv2.putText(frame, "Total Pedestrian Counter: " + str(total_person_counter), (int(20), int(120)), 0, 5e-3 * 200, (0, 255, 0), 2)
+    cv2.putText(frame, "Current Pedestrian Counter: " + str(current_person_counter), (int(20), int(80)), 0, 5e-3 * 200, (0, 255, 0), 2)
+    cv2.putText(frame, "FPS: %f" % (fps), (int(20), int(40)), 0, 5e-3 * 200, (0, 255, 0), 3)
+    cv2.namedWindow("YOLO4_Deep_SORT", 0)
+    cv2.resizeWindow('YOLO4_Deep_SORT', 1024, 768)
+    cv2.imshow('YOLO4_Deep_SORT', frame)
+
+
+# 从读取的 frame 帧中裁剪 track 对应的检测框，并且根据 track id 保存起来
+def crop_save_image(frame, track, bbox, person_id):
+    # 保证 bbox 的框都在 image 的长宽范围之内
+    bbox[:2] = np.maximum(0, bbox[:2])
+    bbox[2:] = np.minimum(frame.shape[:2], bbox[2:])
+
+    img = frame[int(bbox[1]):int(bbox[3]), int(bbox[0]):int(bbox[2])]
+    dir_path = "./images/" + str(track.track_id)
+    # 每一个 track id 对应一个文件夹保存图片
+    if not os.path.exists(dir_path):
+        os.mkdir(dir_path)
+
+    if img.any():
+        person_id.add_track(track.track_id)
+        img_name = str(track.track_id) + '-' + str(person_id.get_person_id(track.track_id)) + ".jpg"
+        cv2.imwrite(dir_path + "/" + img_name, img)
+
 
 def main(yolo):
     start = time.time()
     max_cosine_distance = 0.3
-    nn_budget = None
+    nn_budget = 200
     nms_max_overlap = 1.0
+    min_confidence = 0.3
+
+    # 打印日志
+    logger = get_logger("root")
+
+    person_id = PersonIdFor1Track()
 
     counter = []
     # deep_sort
@@ -59,9 +117,14 @@ def main(yolo):
     metric = nn_matching.NearestNeighborDistanceMetric("cosine", max_cosine_distance, nn_budget)
     tracker = Tracker(metric)
 
-    write_video_flag = True
+    write_video_flag = False
+    # 是否将目标追踪的结果显示出来
+    show_frame_result = True
     # VideoCapture()中参数是0，表示打开笔记本的内置摄像头，参数是视频文件路径则打开视频
     video_capture = cv2.VideoCapture(args["input"])
+    video_capture = cv2.VideoCapture("rtsp://admin:qwer1234@192.168.12.119//h264/ch1/main/av_stream")
+
+    print("video status: " + str(video_capture.isOpened()))
 
     if write_video_flag:
         # Define the codec and create VideoWriter object
@@ -69,14 +132,24 @@ def main(yolo):
         h = int(video_capture.get(4))
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter('./output/output.avi', fourcc, 15, (w, h))
-        list_file = open('detection_rslt.txt', 'w')
-        frame_index = -1
 
     fps = 0.0
 
+    # 进行跳帧处理
+    frame_counter = 0
+    frame_interval = 6
+    frame_index = -1
+
     while True:
+        start = time.time()
+
         # cap.read()按帧读取视频，ret,frame是获cap.read()方法的两个返回值。其中ret是布尔值，如果读取帧是正确的则返回True，如果文件读取到结尾，它的返回值就为False。frame就是每一帧的图像，是个三维矩阵。
-        ret, frame = video_capture.read()  # frame shape 640 * 480 * 3
+        ret, frame = video_capture.read()
+
+        frame_counter += 1
+        if (frame_counter % frame_interval) != 0:
+            continue
+
         if not ret:
             break
         t1 = time.time()
@@ -87,7 +160,8 @@ def main(yolo):
         features = encoder(frame, boxes)
         # score to 1.0 here
         # 根据 yolo 检测到的检测框和特征向量，得到 Detection 类对象
-        detections = [Detection(bbox, conf, feature) for bbox, conf, feature in zip(boxes, confidence, features)]
+        detections = [Detection(bbox, conf, feature) for bbox, conf, feature in zip(boxes, confidence, features) if
+                      conf > min_confidence]
         # 获取到 frame 图像中每一个检测框的坐标
         boxes = np.array([d.tlwh for d in detections])
         scores = np.array([d.confidence for d in detections])
@@ -103,11 +177,6 @@ def main(yolo):
         i = int(0)
         indexIDs = []
 
-        for det in detections:
-            bbox = det.to_tlbr()
-            # 在 frame 上画出黑色的检测框
-            cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (255, 255, 255), 2)
-
         for track in tracker.tracks:
             # 遇到以下两种情况，不在 frame 上显示出追踪的轨迹
             # 1.track 的状态不为 confirmed，也就是说要么处于 deleted 或者 tentative
@@ -120,20 +189,9 @@ def main(yolo):
             bbox = track.to_tlbr()
             color = [int(c) for c in COLORS[indexIDs[i] % len(COLORS)]]
 
-            list_file.write(str(frame_index) + ',')
-            list_file.write(str(track.track_id) + ',')
-
             # cv2.rectangle 在图像上显示矩形框，使用对角线，来画矩形
             # cv2.rectangle(img, (bbox.left, bbox.top), (bbox.right, bbox.bottom), (rgb color), 3)
             cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (color), 3)
-
-            b0 = str(bbox[0])  # bbox.left
-            b1 = str(bbox[1])  # bbox.top
-            b2 = str(bbox[2] - bbox[0])  # bbox.right
-            b3 = str(bbox[3] - bbox[1])  # bbox.bottom
-
-            list_file.write(str(b0) + ',' + str(b1) + ',' + str(b2) + ',' + str(b3))
-            list_file.write('\n')
 
             # 在检测框上方显示物体的追踪 id
             cv2.putText(frame, str(track.track_id), (int(bbox[0]), int(bbox[1] - 50)), 0, 5e-3 * 150, (color), 2)
@@ -151,25 +209,17 @@ def main(yolo):
 
             thickness = 5
 
-            # cv2.circle 根据给定的圆心和半径等画园
-            # 前面求出了检测框的中心点，在检测框上以中心点为圆心，画一个半径为 1 的圆
-            cv2.circle(frame, (center), 1, color, thickness)
+            # cv2.circle 根据给定的圆心和半径等画园，前面求出了检测框的中心点，在检测框上以中心点为圆心，画一个半径为 1 的圆
+            cv2.circle(frame, center, 1, color, thickness)
 
-            # pts 中保存了检测框前一段时间的中心点的坐标，因此遍历 pts，并且在每两个点之间画出一个条线，据此在 frame 上
-            # 显示出物体的移动轨迹
-            for j in range(1, len(pts[track.track_id])):
-                if pts[track.track_id][j - 1] is None or pts[track.track_id][j] is None:
-                    continue
-                thickness = int(np.sqrt(64 / float(j + 1)) * 2)
-                cv2.line(frame, (pts[track.track_id][j - 1]), (pts[track.track_id][j]), (color), thickness)
+            crop_save_image(frame, track, bbox, person_id)
 
+        end = time.time()
         count = len(set(counter))
-        cv2.putText(frame, "Total Pedestrian Counter: " + str(count), (int(20), int(120)), 0, 5e-3 * 200, (0, 255, 0), 2)
-        cv2.putText(frame, "Current Pedestrian Counter: " + str(i), (int(20), int(80)), 0, 5e-3 * 200, (0, 255, 0), 2)
-        cv2.putText(frame, "FPS: %f" % (fps), (int(20), int(40)), 0, 5e-3 * 200, (0, 255, 0), 3)
-        cv2.namedWindow("YOLO4_Deep_SORT", 0)
-        cv2.resizeWindow('YOLO4_Deep_SORT', 1024, 768)
-        cv2.imshow('YOLO4_Deep_SORT', frame)
+
+        # 显示 frame 图片
+        if show_frame_result:
+            show_image(count, i, fps, frame)
 
         if write_video_flag:
             # 将经过处理（画上了检测框和追踪框）的 frame 保存到 output.avi 中
@@ -177,27 +227,25 @@ def main(yolo):
             frame_index = frame_index + 1
 
         fps = (fps + (1. / (time.time() - t1))) / 2
-        out.write(frame)
         frame_index = frame_index + 1
+        logger.info("time: {:.03f}s, fps: {:.03f}, detection numbers: {}, tracking numbers: {}".format(end - start, 1 / (end - start), len(detections), len(tracker.tracks)))
 
         # Press Q to stop!
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    print(" ")
     print("[Finish]")
-    end = time.time()
 
     if len(pts[track.track_id]) is not None:
         print(args["input"][43:57] + ": " + str(count) + " " + str(class_name) + ' Found')
 
     else:
         print("[No Found]")
-    # print("[INFO]: model_image_size = (960, 960)")
+
     video_capture.release()
     if write_video_flag:
         out.release()
-        list_file.close()
+
     cv2.destroyAllWindows()
 
 

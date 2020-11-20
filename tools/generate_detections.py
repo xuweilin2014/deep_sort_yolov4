@@ -68,7 +68,6 @@ def extract_image_patch(image, bbox, patch_shape):
     image = image[sy:ey, sx:ex]
     # 将裁减好的 image 的长宽高转变为 patch_shape
     image = cv2.resize(image, tuple(patch_shape[::-1]))
-
     return image
 
 
@@ -88,7 +87,6 @@ class ImageEncoder(object):
         # 导入计算图
         tf.import_graph_def(graph_def, name="net")
 
-        #
         self.input_var = tf.get_default_graph().get_tensor_by_name("net/%s:0" % input_name)
         self.output_var = tf.get_default_graph().get_tensor_by_name("net/%s:0" % output_name)
 
